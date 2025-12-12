@@ -1,0 +1,875 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Focus Tracker — Improved</title>
+
+  <!-- MediaPipe libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils@0.6/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
+
+  <style>
+    :root{
+      --bg1: #f6f7fb;
+      --accent: linear-gradient(90deg,#667eea,#764ba2);
+      --card: #ffffff;
+      --muted: #6b6f77;
+      --good: #d4edda;
+      --bad: #f8d7da;
+      --warn: #fff3cd;
+    }
+    [data-theme="dark"]{
+      --bg1:#0f1221; --card:#0b0d17; --muted:#c0c4d0;
+    }
+    *{box-sizing:border-box}
+    body{
+      font-family: Inter, "Segoe UI", Roboto, system-ui, sans-serif;
+      margin:0; min-height:100vh; padding:24px;
+      background: radial-gradient(circle at 10% 10%, rgba(118,75,162,0.08), transparent 10%),
+                  linear-gradient(180deg,var(--bg1) 0%, #e9eefc 100%);
+      display:flex; align-items:center; justify-content:center;
+    }
+
+    .app {
+      width:100%; max-width:980px; border-radius:14px; overflow:hidden;
+      box-shadow: 0 12px 40px rgba(6,10,30,0.15);
+      background: linear-gradient(180deg, rgba(255,255,255,0.85), rgba(255,255,255,0.90));
+      display:grid; grid-template-columns: 1fr 380px; gap:18px; padding:18px;
+    }
+
+    .left {
+      padding:12px 18px;
+      display:flex; flex-direction:column; gap:14px;
+    }
+    .title {
+      display:flex; align-items:center; justify-content:space-between; gap:12px;
+    }
+    h1 { font-size:1.25rem; margin:0; display:flex; gap:10px; align-items:center; }
+    .controls { display:flex; gap:8px; align-items:center; }
+
+    .card { background:var(--card); border-radius:10px; padding:12px; box-shadow: 0 4px 18px rgba(11,14,28,0.06) }
+    .video-container { position:relative; border-radius:10px; overflow:hidden; background:#000; display:flex; align-items:center; justify-content:center; min-height:260px; }
+    video { width:100%; height:auto; display:block; }
+    canvas { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
+
+    .big-score { font-size:3.2rem; font-weight:700; color:#273144; letter-spacing: -1px; }
+    .progress {
+      height:12px; background:#e9eefc; border-radius:999px; overflow:hidden; margin-top:8px;
+    }
+    .progress > i{ display:block; height:100%; width:0%; background: linear-gradient(90deg,#667eea,#764ba2); transition: width .25s linear; }
+
+    .status { padding:10px; border-radius:8px; font-weight:600; color:var(--muted); text-align:center; margin-top:8px; }
+    .status.focused { background:var(--good); color:#155724; }
+    .status.unfocused { background:var(--bad); color:#721c24; }
+    .status.idle { background:var(--warn); color:#856404; }
+
+    .stats-grid { display:grid; grid-template-columns: repeat(3,1fr); gap:8px; margin-top:8px; }
+    .stat { padding:10px; border-radius:8px; text-align:center; }
+    .stat .value { font-weight:700; font-size:1.1rem; color:#222; }
+    .stat .label { font-size:.85rem; color:var(--muted) }
+
+    .right { padding:12px 18px; display:flex; flex-direction:column; gap:12px; min-width:320px; }
+    .setting-row { display:flex; gap:8px; align-items:center; justify-content:space-between; margin-bottom:6px; }
+    .small { font-size:.9rem; color:var(--muted) }
+
+    button.primary {
+      background: linear-gradient(90deg,#667eea,#764ba2); color:white; border:none; padding:10px 12px; border-radius:8px; cursor:pointer; font-weight:700;
+    }
+    button.ghost { background:transparent; border:1px solid rgba(36,41,60,0.06); padding:8px 10px; border-radius:8px; cursor:pointer; }
+    .row { display:flex; gap:8px; align-items:center }
+
+    .modal {
+      position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); background:var(--card); padding:18px; border-radius:12px; box-shadow: 0 22px 60px rgba(6,10,30,0.35);
+      z-index:1000; width:min(680px,95%); display:none;
+    }
+    .modal.show{ display:block;}
+    .modal .hdr{ display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px;}
+    .history-list { max-height:240px; overflow:auto; margin-top:8px; }
+    .history-item { padding:8px; border-radius:8px; display:flex; justify-content:space-between; gap:8px; align-items:center }
+    .muted{ color:var(--muted) }
+
+    .footer { font-size:.82rem; color:var(--muted); text-align:center; padding:8px; }
+
+    @media (max-width:880px){
+      .app { grid-template-columns: 1fr; }
+      .right { min-width:unset; }
+    }
+  </style>
+</head>
+<body data-theme="light">
+  <div class="app" role="application" aria-label="Focus Tracker">
+    <div class="left">
+      <div class="title">
+        <h1>🎯 Focus Tracker</h1>
+        <div class="controls">
+          <label class="small muted">Theme</label>
+          <select id="themeSelect" title="Theme" style="padding:6px;border-radius:8px">
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+          <div>
+            <div class="big-score" id="focusPercentage">0%</div>
+            <div class="small muted">Current Focus Score</div>
+            <div class="progress"><i id="progressFill"></i></div>
+            <div id="status" class="status idle">Click Start to begin tracking</div>
+          </div>
+
+          <div style="width:340px; padding-left:12px;">
+            <div class="video-container card" id="videoCard" style="min-height:220px;">
+              <video id="video" autoplay playsinline muted></video>
+              <canvas id="canvas"></canvas>
+              <div id="no-camera" style="position:absolute; left:0; right:0; top:0; bottom:0; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; pointer-events:none;"></div>
+            </div>
+
+            <div style="margin-top:8px; display:flex; gap:8px;">
+              <button id="startBtn" class="primary">Start Tracking</button>
+              <button id="resetBtn" class="ghost">Reset Stats</button>
+              <button id="summaryBtn" class="ghost">Session Summary</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="stats-grid" style="margin-top:12px;">
+          <div class="stat card">
+            <div class="value" id="focusedTime">0s</div>
+            <div class="label">Time Focused</div>
+          </div>
+          <div class="stat card">
+            <div class="value" id="avgFocus">0%</div>
+            <div class="label">Average Focus</div>
+          </div>
+          <div class="stat card">
+            <div class="value" id="distractions">0</div>
+            <div class="label">Distractions</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="display:flex; gap:12px; align-items:center; justify-content:space-between;">
+        <div>
+          <div style="font-weight:700">Pomodoro</div>
+          <div class="small muted">Simple 25/5 timer to boost sessions</div>
+        </div>
+        <div class="row">
+          <button id="pomStart" class="ghost">Start Pomodoro</button>
+          <button id="pomStop" class="ghost">Stop</button>
+          <div id="pomStatus" class="small muted" style="min-width:120px; text-align:right">Idle</div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="right">
+      <div class="card">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <div>
+            <div style="font-weight:700">Settings</div>
+            <div class="small muted">Performance & alerts</div>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="small muted">Detection Rate</div>
+          <select id="rateSelect" style="padding:6px;border-radius:8px">
+            <option value="150">~6 FPS (Recommended)</option>
+            <option value="100">~10 FPS</option>
+            <option value="60">~16 FPS</option>
+          </select>
+        </div>
+
+        <div class="setting-row">
+          <div class="small muted">Camera Resolution</div>
+          <select id="resSelect" style="padding:6px;border-radius:8px">
+            <option value="640">640×480</option>
+            <option value="320">320×240 (low CPU)</option>
+          </select>
+        </div>
+
+        <div class="setting-row">
+          <div class="small muted">Sound Alerts</div>
+          <input type="checkbox" id="soundToggle" checked />
+        </div>
+
+        <div class="setting-row">
+          <div class="small muted">Vibration</div>
+          <input type="checkbox" id="vibrateToggle" />
+        </div>
+
+        <div class="setting-row">
+          <div class="small muted">Save session history</div>
+          <input type="checkbox" id="saveToggle" checked />
+        </div>
+
+        <div style="height:8px"></div>
+        <div style="display:flex; gap:8px;">
+          <button id="clearHistory" class="ghost">Clear History</button>
+          <button id="viewHistory" class="primary">View History</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="font-weight:700">How Focus Score Works</div>
+        <div class="small muted" style="margin-top:6px;">
+          Score is computed using your face position, head angle, distance to camera and eye openness.
+          Scores near 100 mean you're centered, facing the screen and have your eyes open.
+        </div>
+
+        <div style="margin-top:10px;">
+          <div style="display:flex; gap:8px; align-items:center;">
+            <div style="width:12px;height:12px;border-radius:3px;background:#d4edda"></div><div class="small muted">Focused</div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:6px;">
+            <div style="width:12px;height:12px;border-radius:3px;background:#fff3cd"></div><div class="small muted">Moderate</div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:6px;">
+            <div style="width:12px;height:12px;border-radius:3px;background:#f8d7da"></div><div class="small muted">Distracted</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card footer">
+        Built with MediaPipe FaceMesh • Works best on Chrome/Edge/Firefox with camera permission granted.
+      </div>
+    </aside>
+  </div>
+
+  <!-- Modal for summaries & history -->
+  <div id="modal" class="modal" role="dialog" aria-modal="true">
+    <div class="hdr">
+      <div style="font-weight:700" id="modalTitle">Session Summary</div>
+      <div><button id="closeModal" class="ghost">Close</button></div>
+    </div>
+    <div id="modalContent"></div>
+  </div>
+
+<script>
+/* =========================
+   App State & UI bindings
+   ========================= */
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+const focusEl = document.getElementById('focusPercentage');
+const progressFill = document.getElementById('progressFill');
+const statusEl = document.getElementById('status');
+const focusedTimeEl = document.getElementById('focusedTime');
+const avgFocusEl = document.getElementById('avgFocus');
+const distractionsEl = document.getElementById('distractions');
+
+const startBtn = document.getElementById('startBtn');
+const resetBtn = document.getElementById('resetBtn');
+const summaryBtn = document.getElementById('summaryBtn');
+const rateSelect = document.getElementById('rateSelect');
+const resSelect = document.getElementById('resSelect');
+const soundToggle = document.getElementById('soundToggle');
+const vibrateToggle = document.getElementById('vibrateToggle');
+const saveToggle = document.getElementById('saveToggle');
+const viewHistoryBtn = document.getElementById('viewHistory');
+const clearHistoryBtn = document.getElementById('clearHistory');
+const modal = document.getElementById('modal');
+const modalTitle = document.getElementById('modalTitle');
+const modalContent = document.getElementById('modalContent');
+const closeModal = document.getElementById('closeModal');
+const themeSelect = document.getElementById('themeSelect');
+
+const pomStart = document.getElementById('pomStart');
+const pomStop = document.getElementById('pomStop');
+const pomStatus = document.getElementById('pomStatus');
+
+let isTracking = false;
+let camera = null;
+let faceMesh = null;
+let faceDetected = false;
+let lastDetectionTime = Date.now();
+
+let lastFrameTime = Date.now();
+let totalTime = 0;
+let focusedTime = 0;
+let distractions = 0;
+let focusSum = 0;
+let focusScore = 0;
+
+let detectionIntervalMs = Number(rateSelect.value); // throttle
+let detectionLastSent = 0;
+
+let worker; // Web Worker for scoring
+let stream = null;
+
+let sessionStart = null;
+let distractionActive = false;
+
+/* =========================
+   Utility: persist history
+   ========================= */
+function loadHistory(){
+  try{
+    const raw = localStorage.getItem('focus_history_v1');
+    return raw ? JSON.parse(raw) : [];
+  }catch(e){ return []; }
+}
+function saveHistory(history){
+  try{ localStorage.setItem('focus_history_v1', JSON.stringify(history)); }catch(e){}
+}
+
+/* =========================
+   Small sound / vibration
+   ========================= */
+const beep = (() => {
+  // create a small oscillator beep for subtle alerts
+  let ctx, o;
+  return (freq=800, duration=120) => {
+    try{
+      if(!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+      o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = 'sine'; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
+      o.start();
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration/1000);
+      setTimeout(()=>{ try{o.stop();}catch(e){} }, duration+20);
+    }catch(e){}
+  };
+})();
+
+function vibrateShort(){
+  if(navigator.vibrate) navigator.vibrate(120);
+}
+
+/* =========================
+   Create Worker for scoring
+   ========================= */
+function createWorker(){
+  const code = `
+    self.onmessage = function(e){
+      const {landmarks} = e.data;
+      if(!landmarks || landmarks.length===0){
+        self.postMessage({score:0, bbox:null, faceDetected:false});
+        return;
+      }
+      // helper
+      const lm = (i)=>landmarks[i];
+      // pick points
+      const nose = lm(4), leftEye = lm(33), rightEye = lm(263), chin = lm(152), forehead = lm(10);
+      const leftEyeTop = lm(159), leftEyeBottom = lm(145), rightEyeTop = lm(386), rightEyeBottom = lm(374);
+
+      // face center (nose)
+      const faceCenterX = nose.x, faceCenterY = nose.y;
+      const distanceFromCenter = Math.sqrt(Math.pow(faceCenterX - 0.5,2) + Math.pow(faceCenterY - 0.5,2));
+      const positionScore = Math.max(0, 100 - distanceFromCenter * 150);
+
+      // face size
+      const faceHeight = Math.abs(forehead.y - chin.y);
+      const optimalFaceSize = 0.4;
+      const sizeScore = Math.max(0, 100 - Math.abs(faceHeight - optimalFaceSize) * 200);
+
+      // angle via eye distance
+      const eyeDistance = Math.abs(leftEye.x - rightEye.x);
+      const angleScore = Math.min(100, eyeDistance * 300);
+
+      // eyes openness
+      const leftEyeOpenness = Math.abs(leftEyeTop.y - leftEyeBottom.y);
+      const rightEyeOpenness = Math.abs(rightEyeTop.y - rightEyeBottom.y);
+      const avgEye = (leftEyeOpenness + rightEyeOpenness)/2;
+      const eyeScore = Math.min(100, avgEye * 2000);
+
+      const combined = positionScore*0.32 + angleScore*0.28 + sizeScore*0.2 + eyeScore*0.2;
+      const score = Math.max(0, Math.min(100, combined));
+
+      // bounding box (min/max)
+      let minX=1, minY=1, maxX=0, maxY=0;
+      for(const p of landmarks){
+        if(p.x < minX) minX = p.x;
+        if(p.y < minY) minY = p.y;
+        if(p.x > maxX) maxX = p.x;
+        if(p.y > maxY) maxY = p.y;
+      }
+
+      self.postMessage({ score, bbox:{minX,minY,maxX,maxY}, faceDetected:true });
+    };
+  `;
+  const blob = new Blob([code],{type:'application/javascript'});
+  const url = URL.createObjectURL(blob);
+  return new Worker(url);
+}
+
+/* =========================
+   Init MediaPipe FaceMesh
+   ========================= */
+function initFaceMesh(){
+  faceMesh = new window.FaceMesh({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${file}`
+  });
+
+  faceMesh.setOptions({
+    maxNumFaces: 1,
+    refineLandmarks: true,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+
+  faceMesh.onResults(onResults);
+}
+
+/* =========================
+   UI helpers
+   ========================= */
+function setStatus(text, cls='idle'){
+  statusEl.className = 'status ' + cls;
+  statusEl.textContent = text;
+}
+
+/* =========================
+   Drawing helpers
+   ========================= */
+function resizeCanvas(){
+  if(!video.videoWidth) return;
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+}
+function clearCanvas(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+}
+function drawLandmarks(landmarks){
+  if(!landmarks) return;
+  ctx.save();
+  ctx.fillStyle = '#667eea';
+  for(const p of landmarks){
+    ctx.beginPath();
+    ctx.arc(p.x * canvas.width, p.y * canvas.height, 2, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+function drawBBox(bbox){
+  if(!bbox) return;
+  ctx.save();
+  ctx.strokeStyle = '#00ffb3';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(bbox.minX * canvas.width, bbox.minY * canvas.height, (bbox.maxX-bbox.minX)*canvas.width, (bbox.maxY-bbox.minY)*canvas.height);
+  ctx.restore();
+}
+
+/* =========================
+   Called by faceMesh onResults
+   ========================= */
+function onResults(results){
+  if(!isTracking) return;
+  resizeCanvas();
+  clearCanvas();
+
+  const faces = results.multiFaceLandmarks;
+  if(!faces || faces.length===0){
+    // if not seen for >2s, mark as no face
+    if(Date.now() - lastDetectionTime > 2000){
+      faceDetected = false;
+      focusScore = 0;
+      setStatus('✗ No face detected - Position yourself in frame','unfocused');
+    }
+    updateUI();
+    return;
+  }
+
+  lastDetectionTime = Date.now();
+  const landmarks = faces[0];
+
+  // throttle sending to worker (detectionIntervalMs)
+  const now = performance.now();
+  if(now - detectionLastSent > detectionIntervalMs){
+    detectionLastSent = now;
+    // send landmarks to worker for scoring
+    worker.postMessage({landmarks});
+  }
+
+  // draw lightly for user
+  drawLandmarks(landmarks);
+}
+
+/* =========================
+   called when worker posts score
+   ========================= */
+function onWorkerMessage(e){
+  const data = e.data;
+  faceDetected = !!data.faceDetected;
+  focusScore = Math.round(data.score || 0);
+
+  // Draw bbox if present
+  if(data.bbox) drawBBox(data.bbox);
+
+  // status text
+  if(!faceDetected){
+    setStatus('✗ No face detected - Position yourself in frame','unfocused');
+  }else if(focusScore > 75){
+    setStatus('✓ Focused - Great posture and attention!','focused');
+  }else if(focusScore > 45){
+    setStatus('⚠ Moderate Focus - Center yourself','idle');
+  }else{
+    setStatus('✗ Low Focus - Adjust position and look at screen','unfocused');
+    // if just dropped below threshold, count a distraction
+    if(!distractionActive){
+      distractions++;
+      distractionsEl.textContent = String(distractions);
+      distractionActive = true;
+      // gentle alert
+      if(soundToggle.checked) beep(700,120);
+      if(vibrateToggle.checked) vibrateShort();
+    }
+  }
+
+  // if regained focus
+  if(focusScore > 60 && distractionActive) distractionActive = false;
+
+  updateUI();
+}
+
+/* =========================
+   UI update: timers and stats
+   ========================= */
+function updateUI(){
+  focusEl.textContent = Math.round(focusScore) + '%';
+  progressFill.style.width = focusScore + '%';
+
+  const now = Date.now();
+  const elapsed = (now - lastFrameTime) / 1000;
+  lastFrameTime = now;
+
+  if(isTracking){
+    totalTime += elapsed;
+    focusSum += focusScore * elapsed;
+    if(focusScore > 75) focusedTime += elapsed;
+  }
+
+  focusedTimeEl.textContent = Math.round(focusedTime) + 's';
+  avgFocusEl.textContent = totalTime>0 ? Math.round(focusSum / totalTime) + '%' : '0%';
+}
+
+/* =========================
+   Start & Stop Tracking
+   ========================= */
+async function startTracking(){
+  if(isTracking) return;
+  // check MediaPipe availability
+  if(typeof window.FaceMesh === 'undefined'){
+    alert('MediaPipe FaceMesh not found. Please ensure scripts loaded and you have internet access.');
+    return;
+  }
+
+  // create worker
+  if(!worker) {
+    worker = createWorker();
+    worker.onmessage = onWorkerMessage;
+  }
+
+  // init FaceMesh if needed
+  if(!faceMesh) initFaceMesh();
+
+  // prepare resolution
+  const desiredRes = Number(resSelect.value) || 640;
+
+  // ask for camera
+  try{
+    startBtn.disabled = true;
+    setStatus('Loading camera & model...', 'idle');
+
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: desiredRes, height: desiredRes*3/4, facingMode: 'user' }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    // show canvas with right size
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    // Use MediaPipe Camera helper to call faceMesh.send each frame
+    camera = new Camera(video, {
+      onFrame: async () => {
+        // don't send if not tracking
+        if(faceMesh && isTracking) {
+          await faceMesh.send({image: video});
+        }else if(faceMesh && !isTracking){
+          // nothing
+        }
+      },
+      width: video.videoWidth,
+      height: video.videoHeight
+    });
+
+    await camera.start();
+
+    isTracking = true;
+    startBtn.textContent = 'Stop Tracking';
+    startBtn.style.background = '#dc3545';
+    startBtn.disabled = false;
+
+    // reset timer trackers
+    sessionStart = Date.now();
+    lastFrameTime = Date.now();
+    totalTime = 0; focusedTime = 0; focusSum = 0; distractions = 0; distractionActive = false;
+    distractionsEl.textContent = '0';
+    // update throttling value
+    detectionIntervalMs = Number(rateSelect.value);
+
+    // focus the loop using rAF for UI updates
+    tick();
+  }catch(err){
+    console.error('Camera start error', err);
+    alert('Camera access denied or not available. Please allow camera for this site.');
+    startBtn.disabled = false;
+    setStatus('Failed to start - Check camera permissions','unfocused');
+  }
+}
+
+function stopTracking(){
+  if(!isTracking) return;
+  isTracking = false;
+
+  // stop camera helper & tracks
+  try{ if(camera) camera.stop(); }catch(e){}
+  try{
+    if(stream){
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+  }catch(e){}
+
+  video.srcObject = null;
+  clearCanvas();
+
+  startBtn.textContent = 'Start Tracking';
+  startBtn.style.background = '';
+  setStatus('Tracking stopped','idle');
+
+  // save session optionally
+  endSessionAndSave();
+}
+
+/* =========================
+   End session: summary + save
+   ========================= */
+function endSessionAndSave(){
+  const duration = sessionStart ? Math.round((Date.now() - sessionStart)/1000) : Math.round(totalTime);
+  const avg = totalTime>0 ? Math.round(focusSum/totalTime) : 0;
+  const sess = {
+    id: 's'+Date.now(),
+    startedAt: sessionStart ? new Date(sessionStart).toISOString() : (new Date()).toISOString(),
+    durationSec: duration,
+    focusedSec: Math.round(focusedTime),
+    avgFocus: avg,
+    distractions
+  };
+
+  if(saveToggle.checked){
+    const history = loadHistory();
+    history.unshift(sess);
+    // keep last 200
+    saveHistory(history.slice(0,200));
+  }
+
+  // show summary modal
+  showModal('Session Summary', `
+    <div style="display:flex; gap:12px; flex-direction:column;">
+      <div><strong>Duration:</strong> ${sess.durationSec}s</div>
+      <div><strong>Focused time:</strong> ${sess.focusedSec}s</div>
+      <div><strong>Average focus:</strong> ${sess.avgFocus}%</div>
+      <div><strong>Distractions:</strong> ${sess.distractions}</div>
+      <div style="margin-top:10px"><button id="saveLocalBtn" class="primary">Close</button></div>
+    </div>
+  `);
+}
+
+/* =========================
+   Modal helpers
+   ========================= */
+function showModal(title, html){
+  modalTitle.textContent = title;
+  modalContent.innerHTML = html;
+  modal.classList.add('show');
+  // attach close action to any primary inside
+  const closeBtn = document.getElementById('saveLocalBtn');
+  if(closeBtn) closeBtn.addEventListener('click', () => modal.classList.remove('show'));
+}
+closeModal.addEventListener('click', ()=> modal.classList.remove('show'));
+
+/* =========================
+   History viewing
+   ========================= */
+viewHistoryBtn.addEventListener('click', () => {
+  const history = loadHistory();
+  if(history.length===0){
+    showModal('Session History','<div class="small muted">No sessions saved yet.</div>');
+    return;
+  }
+  const items = history.map(s => {
+    const sDate = new Date(s.startedAt).toLocaleString();
+    return `<div class="history-item"><div>
+              <div style="font-weight:700">${sDate}</div>
+              <div class="small muted">Duration ${s.durationSec}s • Focus ${s.avgFocus}%</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-weight:700">${s.focusedSec}s</div>
+              <div class="small muted">${s.distractions} distractions</div>
+            </div></div>`;
+  }).join('');
+  showModal('Session History', `<div class="history-list">${items}</div>`);
+});
+
+clearHistoryBtn.addEventListener('click', () => {
+  if(confirm('Clear saved session history?')) {
+    saveHistory([]);
+    alert('History cleared');
+  }
+});
+
+/* =========================
+   Small helpers & events
+   ========================= */
+startBtn.addEventListener('click', () => {
+  if(isTracking) stopTracking();
+  else startTracking();
+});
+resetBtn.addEventListener('click', () => {
+  // reset counters without stopping
+  focusedTime = 0; totalTime = 0; focusSum = 0; distractions = 0; distractionActive = false;
+  focusedTimeEl.textContent = '0s'; avgFocusEl.textContent = '0%'; distractionsEl.textContent = '0';
+  focusScore = 0; focusEl.textContent = '0%'; progressFill.style.width = '0%';
+  setStatus('Reset stats','idle');
+});
+summaryBtn.addEventListener('click', () => {
+  // quick summary of current run
+  const duration = sessionStart ? Math.round((Date.now() - sessionStart)/1000) : Math.round(totalTime);
+  showModal('Live Summary', `
+    <div style="display:flex; gap:12px; flex-direction:column;">
+      <div><strong>Live duration:</strong> ${duration}s</div>
+      <div><strong>Focused time:</strong> ${Math.round(focusedTime)}s</div>
+      <div><strong>Average focus:</strong> ${totalTime>0 ? Math.round(focusSum/totalTime) : 0}%</div>
+      <div><strong>Distractions:</strong> ${distractions}</div>
+    </div>
+  `);
+});
+
+/* pause detection when tab hidden */
+document.addEventListener('visibilitychange', () => {
+  if(document.hidden){
+    // pause heavy work
+    if(camera) {
+      try{ camera.stop(); }catch(e){}
+    }
+    setStatus('Paused (tab hidden)', 'idle');
+  }else{
+    // restart camera if tracking was active
+    if(isTracking){
+      // restart camera helper
+      if(video.srcObject == null && stream == null){
+        // attempt to restart automatically
+        startTracking();
+      }else{
+        try{ if(camera) camera.start(); }catch(e){}
+      }
+    }
+  }
+});
+
+/* theme */
+themeSelect.addEventListener('change', e => {
+  const t = e.target.value;
+  document.body.setAttribute('data-theme', t);
+});
+
+/* rate & resolution changes */
+rateSelect.addEventListener('change', () => detectionIntervalMs = Number(rateSelect.value));
+resSelect.addEventListener('change', async () => {
+  // if tracking, restart with new res
+  if(isTracking){
+    stopTracking();
+    await startTracking();
+  }
+});
+
+/* sound / vibrate toggles are read directly */
+
+/* worker creation done lazily upon start */
+
+// attach worker handler to global variable when created
+// implement rAF loop to update UI smoothly even if worker updates are intermittent
+function tick(){
+  // update UI at screen refresh
+  updateUI();
+  if(isTracking) requestAnimationFrame(tick);
+}
+
+/* =========================
+   Initialize worker & fallbacks on load
+   ========================= */
+window.addEventListener('load', () => {
+  // check for mediaDevices
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    document.getElementById('no-camera').textContent = 'No camera API available in this browser.';
+    setStatus('Camera API not found', 'unfocused');
+  }
+  // create worker early
+  worker = createWorker();
+  worker.onmessage = onWorkerMessage;
+
+  // test mediaPipe presence after script load
+  if(typeof window.FaceMesh === 'undefined'){
+    setStatus('MediaPipe FaceMesh not loaded. Some features may not work.','unfocused');
+  }
+});
+
+/* =========================
+   Pomodoro (simple)
+   ========================= */
+let pomInterval = null;
+let pomRemaining = 0;
+let inPom = false;
+pomStart.addEventListener('click', () => {
+  if(inPom) return;
+  inPom = true; pomRemaining = 25*60; pomStatus.textContent = 'Focus: 25:00';
+  if(pomInterval) clearInterval(pomInterval);
+  pomInterval = setInterval(() => {
+    pomRemaining--;
+    const m = Math.floor(pomRemaining/60).toString().padStart(2,'0');
+    const s = (pomRemaining%60).toString().padStart(2,'0');
+    pomStatus.textContent = `Focus: ${m}:${s}`;
+    if(pomRemaining<=0){
+      clearInterval(pomInterval);
+      // break period
+      if(soundToggle.checked) beep(900,200);
+      if(vibrateToggle.checked) vibrateShort();
+      pomStatus.textContent = 'Break: 05:00';
+      pomRemaining = 5*60;
+      pomInterval = setInterval(() => {
+        pomRemaining--;
+        const mm = Math.floor(pomRemaining/60).toString().padStart(2,'0');
+        const ss = (pomRemaining%60).toString().padStart(2,'0');
+        pomStatus.textContent = `Break: ${mm}:${ss}`;
+        if(pomRemaining<=0){
+          clearInterval(pomInterval);
+          inPom = false; pomStatus.textContent = 'Idle';
+          if(soundToggle.checked) beep(1200,200);
+        }
+      }, 1000);
+    }
+  }, 1000);
+});
+pomStop.addEventListener('click', () => {
+  if(pomInterval) clearInterval(pomInterval);
+  pomInterval = null; inPom = false; pomStatus.textContent = 'Idle';
+});
+
+/* =========================
+   Shutdown worker on unload
+   ========================= */
+window.addEventListener('beforeunload', () => {
+  try{ if(worker) worker.terminate(); }catch(e){}
+});
+</script>
+</body>
+</html>
